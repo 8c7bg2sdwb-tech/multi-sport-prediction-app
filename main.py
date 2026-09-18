@@ -1,96 +1,264 @@
-from math import exp, factorial
-from typing import Optional
+import json
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
 
-app = FastAPI(title="Multi-Sport Prediction App", version="0.1.0")
 
-class FootballInput(BaseModel):
-    home_team: str
-    away_team: str
-    home_goals_for: float = Field(0, ge=0)
-    home_goals_against: float = Field(0, ge=0)
-    away_goals_for: float = Field(0, ge=0)
-    away_goals_against: float = Field(0, ge=0)
-    home_advantage: float = Field(0.25, ge=0, le=1)
-    odds_home: Optional[float] = Field(None, gt=1)
-    odds_draw: Optional[float] = Field(None, gt=1)
-    odds_away: Optional[float] = Field(None, gt=1)
+app = FastAPI(title="Multi-Sport Prediction App")
 
-def poisson(k: int, lam: float) -> float:
-    return exp(-lam) * lam**k / factorial(k)
 
-def probabilities(inp: FootballInput):
-    home_xg = max(0.05, (inp.home_goals_for + inp.away_goals_against) / 2 + inp.home_advantage)
-    away_xg = max(0.05, (inp.away_goals_for + inp.home_goals_against) / 2)
-    matrix = {(h, a): poisson(h, home_xg) * poisson(a, away_xg) for h in range(8) for a in range(8)}
-    home = sum(p for (h,a),p in matrix.items() if h>a)
-    draw = sum(p for (h,a),p in matrix.items() if h==a)
-    away = sum(p for (h,a),p in matrix.items() if h<a)
-    btts = sum(p for (h,a),p in matrix.items() if h>0 and a>0)
-    over25 = sum(p for (h,a),p in matrix.items() if h+a>=3)
-    scores = sorted(matrix.items(), key=lambda x:x[1], reverse=True)[:5]
-    return {
-        "expected_goals": round(home_xg + away_xg, 3),
-        "probabilities": {
-            "home": round(home,4), "draw": round(draw,4), "away": round(away,4),
-            "btts_yes": round(btts,4), "over_2_5": round(over25,4),
-            "under_2_5": round(1-over25,4)
-        },
-        "top_scores": [
-            {"score": f"{h}-{a}", "probability": round(p,4)}
-            for (h,a),p in scores
-        ]
-    }
+# ============================================================
+# OPENFOOTBALL
+# ============================================================
+
+OPENFOOTBALL_BASE = (
+    "https://raw.githubusercontent.com/"
+    "openfootball/football.json/master/"
+)
+
+
+def get_openfootball_league(
+    season: str = "2026-27",
+    league_file: str = "en.1.json",
+):
+    """
+    Récupère les données d'une compétition depuis OpenFootball.
+    Exemple :
+    2026-27/en.1.json = Premier League anglaise
+    """
+
+    url = f"{OPENFOOTBALL_BASE}{season}/{league_file}"
+
+    try:
+        with urlopen(url, timeout=15) as response:
+            data = json.loads(
+                response.read().decode("utf-8")
+            )
+
+        return data
+
+    except HTTPError as error:
+        return {
+            "error": "OpenFootball HTTP error",
+            "status": error.code,
+            "url": url,
+        }
+
+    except URLError as error:
+        return {
+            "error": "Impossible de contacter OpenFootball",
+            "details": str(error.reason),
+            "url": url,
+        }
+
+    except Exception as error:
+        return {
+            "error": "Erreur lors de la lecture des données",
+            "details": str(error),
+            "url": url,
+        }
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 @app.get("/health")
 def health():
-    return {"status":"ok"}
+    return {
+        "status": "ok",
+        "app": "multi-sport-prediction-app",
+        "data_source": "OpenFootball",
+    }
 
-@app.post("/api/predict/football")
-def predict_football(inp: FootballInput):
-    result = probabilities(inp)
-    if inp.odds_home and inp.odds_draw and inp.odds_away:
-        raw = [1/inp.odds_home, 1/inp.odds_draw, 1/inp.odds_away]
-        total = sum(raw)
-        market = [x/total for x in raw]
-        model = [result["probabilities"]["home"], result["probabilities"]["draw"], result["probabilities"]["away"]]
-        result["market_probabilities"] = {
-            "home":round(market[0],4), "draw":round(market[1],4), "away":round(market[2],4)
-        }
-        result["edge"] = {
-            k:round(model[i]-market[i],4)
-            for i,k in enumerate(["home","draw","away"])
-        }
-    return result
+
+# ============================================================
+# TEST OPENFOOTBALL
+# ============================================================
+
+@app.get("/api/football/test")
+def football_test():
+
+    data = get_openfootball_league()
+
+    if "error" in data:
+        return data
+
+    matches = data.get("matches", [])
+
+    return {
+        "status": "ok",
+        "source": "OpenFootball",
+        "competition": data.get("name"),
+        "number_of_matches": len(matches),
+        "sample_matches": matches[:5],
+    }
+
+
+# ============================================================
+# TOUS LES MATCHS
+# ============================================================
+
+@app.get("/api/football/matches")
+def football_matches():
+
+    data = get_openfootball_league()
+
+    if "error" in data:
+        return data
+
+    return {
+        "status": "ok",
+        "source": "OpenFootball",
+        "competition": data.get("name"),
+        "matches": data.get("matches", []),
+    }
+
+
+# ============================================================
+# PAGE PRINCIPALE
+# ============================================================
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return '''<!doctype html><html lang="fr"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Multi-Sport Prediction</title>
-<style>
-body{font-family:system-ui;margin:0;background:#0b1020;color:#eef2ff}
-main{max-width:900px;margin:auto;padding:32px}h1{font-size:34px}
-p{color:#aab4d0}.card{background:#151c33;border:1px solid #283252;border-radius:18px;padding:22px;margin:16px 0}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #3a4668;background:#0d1428;color:white}
-button{margin-top:16px;padding:13px 18px;border:0;border-radius:10px;cursor:pointer}
-pre{white-space:pre-wrap;color:#cbd5e1}@media(max-width:650px){.grid{grid-template-columns:1fr}}
-</style></head><body><main><h1>🏆 Multi-Sport Prediction</h1>
-<p>MVP — football d'abord, architecture prête pour basketball et hockey.</p>
-<div class="card"><h2>⚽ Analyse football</h2><div class="grid">
-<input id="home" placeholder="Équipe domicile"><input id="away" placeholder="Équipe extérieur">
-<input id="hgf" type="number" step="0.01" placeholder="Buts marqués domicile">
-<input id="hga" type="number" step="0.01" placeholder="Buts encaissés domicile">
-<input id="agf" type="number" step="0.01" placeholder="Buts marqués extérieur">
-<input id="aga" type="number" step="0.01" placeholder="Buts encaissés extérieur">
-</div><button onclick="predict()">Analyser</button><pre id="out"></pre></div>
-</main><script>
-async function predict(){let n=id=>document.getElementById(id).value;
-let body={home_team:n('home'),away_team:n('away'),home_goals_for:+n('hgf')||0,
-home_goals_against:+n('hga')||0,away_goals_for:+n('agf')||0,away_goals_against:+n('aga')||0};
-let r=await fetch('/api/predict/football',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}
-</script></body></html>'''
+
+    return """
+    <!DOCTYPE html>
+
+    <html lang="fr">
+
+    <head>
+
+        <meta charset="UTF-8">
+
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+        >
+
+        <title>Multi-Sport Prediction App</title>
+
+        <style>
+
+            body {
+                margin: 0;
+                font-family: Arial, sans-serif;
+                background: #0f172a;
+                color: white;
+            }
+
+            .container {
+                max-width: 900px;
+                margin: auto;
+                padding: 30px 20px;
+            }
+
+            h1 {
+                font-size: 32px;
+                margin-bottom: 10px;
+            }
+
+            .card {
+                background: #1e293b;
+                border-radius: 16px;
+                padding: 24px;
+                margin-top: 20px;
+            }
+
+            .sport {
+                display: inline-block;
+                padding: 10px 16px;
+                margin: 5px;
+                border-radius: 10px;
+                background: #334155;
+            }
+
+            .status {
+                margin-top: 25px;
+                padding: 15px;
+                background: #334155;
+                border-radius: 10px;
+            }
+
+            a {
+                color: #38bdf8;
+                text-decoration: none;
+            }
+
+            a:hover {
+                text-decoration: underline;
+            }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <div class="container">
+
+            <h1>
+                🏆 Multi-Sport Prediction App
+            </h1>
+
+            <p>
+                Application de prédiction sportive
+                basée sur des données réelles.
+            </p>
+
+            <div class="card">
+
+                <h2>Sports</h2>
+
+                <span class="sport">⚽ Football</span>
+
+                <span class="sport">🏀 Basketball</span>
+
+                <span class="sport">🏒 Hockey</span>
+
+            </div>
+
+            <div class="card">
+
+                <h2>⚽ Source football</h2>
+
+                <p>
+                    Source actuelle :
+                    <strong>OpenFootball</strong>
+                </p>
+
+                <p>
+                    Les données sont récupérées
+                    directement depuis les fichiers
+                    publics OpenFootball.
+                </p>
+
+                <p>
+                    <a href="/api/football/test">
+                        🔎 Tester les données football
+                    </a>
+                </p>
+
+                <p>
+                    <a href="/api/football/matches">
+                        📋 Voir les matchs
+                    </a>
+                </p>
+
+            </div>
+
+            <div class="status">
+
+                API :
+                <strong>Online</strong>
+
+            </div>
+
+        </div>
+
+    </body>
+
+    </html>
+    """
