@@ -1,164 +1,274 @@
+
+import json
+import urllib.request
 from math import exp, factorial
+from functools import lru_cache
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+app = FastAPI(title="Football Prediction Engine")
+
+BASE_URL = (
+    "https://raw.githubusercontent.com/"
+    "openfootball/football.json/master"
+)
 
 
-app = FastAPI(title="Multi-Sport Prediction App")
+@lru_cache(maxsize=20)
+def load_matches(season: str, league_file: str):
+    if "/" in season or ".." in season:
+        raise ValueError("Saison invalide")
+
+    if "/" in league_file or ".." in league_file:
+        raise ValueError("Fichier de ligue invalide")
+
+    url = f"{BASE_URL}/{season}/{league_file}"
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "FootballPredictionEngine"}
+    )
+
+    with urllib.request.urlopen(request, timeout=20) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    matches = []
+
+    for round_data in data.get("rounds", []):
+        for match in round_data.get("matches", []):
+            score = match.get("score", {}).get("ft")
+
+            if not score or len(score) != 2:
+                continue
+
+            try:
+                home_goals = int(score[0])
+                away_goals = int(score[1])
+            except (ValueError, TypeError):
+                continue
+
+            matches.append({
+                "home": match["team1"],
+                "away": match["team2"],
+                "home_goals": home_goals,
+                "away_goals": away_goals,
+            })
+
+    return matches
 
 
-class FootballInput(BaseModel):
-    home_team: str
-    away_team: str
-
-    home_goals_for: float
-    home_goals_against: float
-
-    away_goals_for: float
-    away_goals_against: float
-
-    home_advantage: float = 0.15
+class PredictionInput(BaseModel):
+    home_team: str = Field(min_length=1)
+    away_team: str = Field(min_length=1)
+    season: str = "2026-27"
+    league_file: str = "en.1.json"
 
     odds_home: Optional[float] = None
     odds_draw: Optional[float] = None
     odds_away: Optional[float] = None
 
 
-def poisson_probability(lmbda: float, k: int) -> float:
-    return exp(-lmbda) * (lmbda ** k) / factorial(k)
+def poisson(lmbda, goals):
+    return exp(-lmbda) * (lmbda ** goals) / factorial(goals)
 
 
-def calculate_prediction(data: FootballInput):
-    home_attack = data.home_goals_for
-    home_defense = data.home_goals_against
+def get_team_statistics(matches, team):
+    home_games = [
+        m for m in matches if m["home"] == team
+    ]
 
-    away_attack = data.away_goals_for
-    away_defense = data.away_goals_against
+    away_games = [
+        m for m in matches if m["away"] == team
+    ]
 
-    expected_home = max(
-        0.05,
-        (home_attack + away_defense) / 2 + data.home_advantage,
+    return {
+        "home_played": len(home_games),
+        "away_played": len(away_games),
+        "home_scored": sum(
+            m["home_goals"] for m in home_games
+        ),
+        "home_conceded": sum(
+            m["away_goals"] for m in home_games
+        ),
+        "away_scored": sum(
+            m["away_goals"] for m in away_games
+        ),
+        "away_conceded": sum(
+            m["home_goals"] for m in away_games
+        ),
+    }
+
+
+def calculate_prediction(data):
+    try:
+        matches = load_matches(
+            data.season,
+            data.league_file
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Impossible de récupérer OpenFootball : {error}"
+        )
+
+    if len(matches) < 10:
+        raise HTTPException(
+            status_code=422,
+            detail="Pas assez de matchs historiques."
+        )
+
+    home_stats = get_team_statistics(
+        matches, data.home_team
     )
 
-    expected_away = max(
-        0.05,
-        (away_attack + home_defense) / 2,
+    away_stats = get_team_statistics(
+        matches, data.away_team
     )
 
-    home_win = 0.0
-    draw = 0.0
-    away_win = 0.0
+    if home_stats["home_played"] < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Pas assez de matchs à domicile pour cette équipe."
+        )
 
-    score_probabilities = []
+    if away_stats["away_played"] < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Pas assez de matchs à l'extérieur pour cette équipe."
+        )
 
-    for home_goals in range(0, 8):
-        for away_goals in range(0, 8):
+    league_home_avg = sum(
+        m["home_goals"] for m in matches
+    ) / len(matches)
+
+    league_away_avg = sum(
+        m["away_goals"] for m in matches
+    ) / len(matches)
+
+    if league_home_avg <= 0 or league_away_avg <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Moyennes de ligue invalides."
+        )
+
+    home_scored_avg = (
+        home_stats["home_scored"]
+        / home_stats["home_played"]
+    )
+
+    home_conceded_avg = (
+        home_stats["home_conceded"]
+        / home_stats["home_played"]
+    )
+
+    away_scored_avg = (
+        away_stats["away_scored"]
+        / away_stats["away_played"]
+    )
+
+    away_conceded_avg = (
+        away_stats["away_conceded"]
+        / away_stats["away_played"]
+    )
+
+    expected_home = (
+        home_scored_avg
+        * away_conceded_avg
+        / league_home_avg
+    )
+
+    expected_away = (
+        away_scored_avg
+        * home_conceded_avg
+        / league_away_avg
+    )
+
+    expected_home = max(0.05, expected_home)
+    expected_away = max(0.05, expected_away)
+
+    home_win = 0
+    draw = 0
+    away_win = 0
+    btts_yes = 0
+    under_25 = 0
+    scores = []
+
+    for h in range(10):
+        for a in range(10):
             probability = (
-                poisson_probability(expected_home, home_goals)
-                * poisson_probability(expected_away, away_goals)
+                poisson(expected_home, h)
+                * poisson(expected_away, a)
             )
 
-            score_probabilities.append(
-                {
-                    "home_goals": home_goals,
-                    "away_goals": away_goals,
-                    "probability": probability,
-                }
-            )
+            scores.append({
+                "score": f"{h}-{a}",
+                "probability": probability
+            })
 
-            if home_goals > away_goals:
+            if h > a:
                 home_win += probability
-            elif home_goals == away_goals:
+            elif h == a:
                 draw += probability
             else:
                 away_win += probability
 
-    btts_yes = 1 - (
-        poisson_probability(expected_home, 0)
-        + poisson_probability(expected_away, 0)
-        - (
-            poisson_probability(expected_home, 0)
-            * poisson_probability(expected_away, 0)
-        )
-    )
+            if h > 0 and a > 0:
+                btts_yes += probability
 
-    total_lambda = expected_home + expected_away
-
-    under_25 = sum(
-        poisson_probability(total_lambda, total_goals)
-        for total_goals in range(0, 3)
-    )
+            if h + a < 3:
+                under_25 += probability
 
     over_25 = 1 - under_25
 
-    score_probabilities.sort(
+    scores.sort(
         key=lambda x: x["probability"],
-        reverse=True,
+        reverse=True
     )
 
-    top_scores = score_probabilities[:5]
+    value_analysis = None
 
-    result = max(
-        [
-            ("1", home_win),
-            ("X", draw),
-            ("2", away_win),
-        ],
-        key=lambda x: x[1],
-    )
+    odds = [
+        data.odds_home,
+        data.odds_draw,
+        data.odds_away
+    ]
 
-    value = None
+    if all(x is not None and x > 1 for x in odds):
+        raw = [1 / x for x in odds]
+        total = sum(raw)
+        market = [x / total for x in raw]
 
-    if (
-        data.odds_home
-        and data.odds_draw
-        and data.odds_away
-    ):
-        market_home = 1 / data.odds_home
-        market_draw = 1 / data.odds_draw
-        market_away = 1 / data.odds_away
+        model = [home_win, draw, away_win]
 
-        total_market = (
-            market_home + market_draw + market_away
-        )
+        value_analysis = {}
 
-        market_home /= total_market
-        market_draw /= total_market
-        market_away /= total_market
-
-        value = {
-            "home": {
-                "market_probability": market_home,
-                "model_probability": home_win,
-                "edge": home_win - market_home,
-                "ev": home_win * data.odds_home - 1,
-            },
-            "draw": {
-                "market_probability": market_draw,
-                "model_probability": draw,
-                "edge": draw - market_draw,
-                "ev": draw * data.odds_draw - 1,
-            },
-            "away": {
-                "market_probability": market_away,
-                "model_probability": away_win,
-                "edge": away_win - market_away,
-                "ev": away_win * data.odds_away - 1,
-            },
-        }
+        for name, probability, market_prob, odd in zip(
+            ["home", "draw", "away"],
+            model,
+            market,
+            odds
+        ):
+            value_analysis[name] = {
+                "model_probability": round(probability, 4),
+                "market_probability": round(market_prob, 4),
+                "edge": round(probability - market_prob, 4),
+                "ev": round(probability * odd - 1, 4)
+            }
 
     return {
-        "home_team": data.home_team,
-        "away_team": data.away_team,
+        "teams": {
+            "home": data.home_team,
+            "away": data.away_team
+        },
+        "data_source": "OpenFootball",
+        "historical_matches": len(matches),
         "expected_goals": {
             "home": round(expected_home, 3),
             "away": round(expected_away, 3),
-            "total": round(
-                expected_home + expected_away,
-                3,
-            ),
+            "total": round(expected_home + expected_away, 3)
         },
         "probabilities": {
             "home_win": round(home_win, 4),
@@ -166,24 +276,17 @@ def calculate_prediction(data: FootballInput):
             "away_win": round(away_win, 4),
             "btts_yes": round(btts_yes, 4),
             "btts_no": round(1 - btts_yes, 4),
-            "over_2_5": round(over_25, 4),
             "under_2_5": round(under_25, 4),
+            "over_2_5": round(over_25, 4)
         },
-        "prediction": {
-            "result": result[0],
-            "result_probability": round(result[1], 4),
-        },
-        "top_exact_scores": [
+        "top_scores": [
             {
-                "score": f"{x['home_goals']}-{x['away_goals']}",
-                "probability": round(
-                    x["probability"],
-                    4,
-                ),
+                "score": x["score"],
+                "probability": round(x["probability"], 4)
             }
-            for x in top_scores
+            for x in scores[:5]
         ],
-        "value_analysis": value,
+        "value_analysis": value_analysis
     }
 
 
@@ -191,12 +294,60 @@ def calculate_prediction(data: FootballInput):
 def health():
     return {
         "status": "ok",
-        "app": "multi-sport-prediction-app",
+        "app": "football-prediction-engine"
     }
 
 
+@app.get("/api/football/test")
+def test_data(
+    season: str = "2026-27",
+    league_file: str = "en.1.json"
+):
+    try:
+        matches = load_matches(season, league_file)
+        return {
+            "status": "success",
+            "source": "OpenFootball",
+            "season": season,
+            "league": league_file,
+            "completed_matches": len(matches)
+        }
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error)
+        )
+
+
+@app.get("/api/football/teams")
+def teams(
+    season: str = "2026-27",
+    league_file: str = "en.1.json"
+):
+    try:
+        matches = load_matches(season, league_file)
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error)
+        )
+
+    names = sorted(set(
+        [m["home"] for m in matches]
+        + [m["away"] for m in matches]
+    ))
+
+    return {"teams": names}
+
+
 @app.post("/api/predict/football")
-def predict_football(data: FootballInput):
+def predict_football(data: PredictionInput):
+    if data.home_team.strip().lower() == data.away_team.strip().lower():
+        raise HTTPException(
+            status_code=422,
+            detail="Les deux équipes doivent être différentes."
+        )
+
     return calculate_prediction(data)
 
 
@@ -206,95 +357,41 @@ def home():
     <!DOCTYPE html>
     <html lang="fr">
     <head>
-        <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1.0">
-
-        <title>Multi-Sport Prediction App</title>
-
-        <style>
-            body {
-                margin: 0;
-                font-family: Arial, sans-serif;
-                background: #0f172a;
-                color: white;
-            }
-
-            .container {
-                max-width: 900px;
-                margin: auto;
-                padding: 30px 20px;
-            }
-
-            h1 {
-                font-size: 32px;
-            }
-
-            .card {
-                background: #1e293b;
-                border-radius: 16px;
-                padding: 24px;
-                margin-top: 20px;
-            }
-
-            .sport {
-                display: inline-block;
-                padding: 10px 16px;
-                margin-right: 8px;
-                border-radius: 10px;
-                background: #334155;
-            }
-
-            .status {
-                margin-top: 25px;
-                padding: 15px;
-                background: #334155;
-                border-radius: 10px;
-            }
-        </style>
+      <meta charset="UTF-8">
+      <meta name="viewport"
+            content="width=device-width, initial-scale=1">
+      <title>Football Prediction Engine</title>
+      <style>
+        body {
+          background:#0f172a;
+          color:white;
+          font-family:Arial;
+          padding:30px;
+          max-width:800px;
+          margin:auto;
+        }
+        .card {
+          background:#1e293b;
+          padding:20px;
+          border-radius:14px;
+          margin-top:20px;
+        }
+      </style>
     </head>
-
     <body>
-        <div class="container">
-
-            <h1>
-                🏆 Multi-Sport Prediction App
-            </h1>
-
-            <p>
-                Analyse statistique football,
-                basketball et hockey.
-            </p>
-
-            <div class="card">
-                <h2>Sports</h2>
-
-                <span class="sport">⚽ Football</span>
-                <span class="sport">🏀 Basketball</span>
-                <span class="sport">🏒 Hockey</span>
-            </div>
-
-            <div class="card">
-                <h2>⚽ Football</h2>
-
-                <p>
-                    Baseline statistique actuellement
-                    basée sur un modèle de Poisson.
-                </p>
-
-                <p>
-                    Les prochaines étapes intégreront
-                    les données historiques, les modèles
-                    entraînés, la calibration et le
-                    backtesting chronologique.
-                </p>
-            </div>
-
-            <div class="status">
-                API : <strong>Online</strong>
-            </div>
-
-        </div>
+      <h1>⚽ Football Prediction Engine</h1>
+      <div class="card">
+        <h2>Moteur statistique</h2>
+        <p>Source : OpenFootball</p>
+        <p>Modèle : Poisson</p>
+        <p>Analyse : 1N2, BTTS et Over/Under 2.5</p>
+        <p>Les cotes servent uniquement à mesurer
+        l'edge et l'espérance de valeur.</p>
+      </div>
+      <div class="card">
+        <h2>Prochaines étapes</h2>
+        <p>Calibration, backtesting et filtres de qualité.</p>
+      </div>
     </body>
     </html>
     """
