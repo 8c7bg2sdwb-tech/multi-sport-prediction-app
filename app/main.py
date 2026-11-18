@@ -346,7 +346,65 @@ def teams(
 
     return {"teams": names}
 
+@app.get("/api/football/statistics")
+def league_statistics(
+    season: str = "2025-26",
+    league_file: str = "en.1.json"
+):
+    try:
+        matches = load_matches(season, league_file)
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Erreur de récupération des données : {error}"
+        )
 
+    teams = sorted(set(
+        [m["home"] for m in matches]
+        + [m["away"] for m in matches]
+    ))
+
+    results = []
+
+    for team in teams:
+        stats = get_team_statistics(matches, team)
+
+        home_played = stats["home_played"]
+        away_played = stats["away_played"]
+        played = home_played + away_played
+
+        goals_scored = (
+            stats["home_scored"]
+            + stats["away_scored"]
+        )
+
+        goals_conceded = (
+            stats["home_conceded"]
+            + stats["away_conceded"]
+        )
+
+        results.append({
+            "team": team,
+            "played": played,
+            "home_played": home_played,
+            "away_played": away_played,
+            "goals_scored": goals_scored,
+            "goals_conceded": goals_conceded,
+            "average_scored": round(
+                goals_scored / played, 2
+            ) if played else 0,
+            "average_conceded": round(
+                goals_conceded / played, 2
+            ) if played else 0
+        })
+
+    return {
+        "status": "success",
+        "season": season,
+        "league": league_file,
+        "teams_count": len(results),
+        "statistics": results
+    }
 @app.post("/api/predict/football")
 def predict_football(data: PredictionInput):
     if data.home_team.strip().lower() == data.away_team.strip().lower():
