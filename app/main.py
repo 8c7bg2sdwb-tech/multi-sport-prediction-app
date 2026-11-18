@@ -496,6 +496,7 @@ def run_backtest(matches, min_history=30):
         if len(historical) < min_history:
             continue
                 temperature = fit_temperature(results)
+       print("TEMPÉRATURE DE CALIBRATION :", temperature)
         matches_of_day = [
             m for m in ordered
             if m.get("date") == current_date
