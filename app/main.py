@@ -35,27 +35,34 @@ def load_matches(season: str, league_file: str):
     with urllib.request.urlopen(request, timeout=20) as response:
         data = json.loads(response.read().decode("utf-8"))
 
-matches = []
+    matches = []
 
-    for round_data in data.get("rounds", []):
-        for match in round_data.get("matches", []):
-            score = match.get("score", {}).get("ft")
+    for match in data.get("matches", []):
+        score_data = match.get("score")
 
-            if not score or len(score) != 2:
-                continue
+        if not isinstance(score_data, dict):
+            continue
 
-            try:
-                home_goals = int(score[0])
-                away_goals = int(score[1])
-            except (ValueError, TypeError):
-                continue
+        score = score_data.get("ft")
 
-            matches.append({
-                "home": match["team1"],
-                "away": match["team2"],
-                "home_goals": home_goals,
-                "away_goals": away_goals,
-            })
+        if not isinstance(score, list) or len(score) != 2:
+            continue
+
+        try:
+            home_goals = int(score[0])
+            away_goals = int(score[1])
+        except (ValueError, TypeError):
+            continue
+
+        if not match.get("team1") or not match.get("team2"):
+            continue
+
+        matches.append({
+            "home": match["team1"],
+            "away": match["team2"],
+            "home_goals": home_goals,
+            "away_goals": away_goals,
+        })
 
     return matches
     
