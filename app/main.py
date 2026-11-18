@@ -424,7 +424,118 @@ def calculate_prediction(data):
         "value_analysis": value_analysis
     }
 
+def run_backtest(matches, min_history=30):
+    ordered = sorted(
+        matches,
+        key=lambda m: m.get("date") or ""
+    )
 
+    results = []
+
+    for index in range(min_history, len(ordered)):
+        historical = ordered[:index]
+        match = ordered[index]
+
+        home = match["home"]
+        away = match["away"]
+
+        home_stats = get_team_statistics(historical, home)
+        away_stats = get_team_statistics(historical, away)
+
+        if (
+            home_stats["home_played"] < 2
+            or away_stats["away_played"] < 2
+        ):
+            continue
+
+        league_home_avg = sum(
+            m["home_goals"] for m in historical
+        ) / len(historical)
+
+        league_away_avg = sum(
+            m["away_goals"] for m in historical
+        ) / len(historical)
+
+        if league_home_avg <= 0 or league_away_avg <= 0:
+            continue
+
+        expected_home = (
+            home_stats["home_scored"]
+            / home_stats["home_played"]
+            * (
+                away_stats["away_conceded"]
+                / away_stats["away_played"]
+            )
+            / league_home_avg
+        )
+
+        expected_away = (
+            away_stats["away_scored"]
+            / away_stats["away_played"]
+            * (
+                home_stats["home_conceded"]
+                / home_stats["home_played"]
+            )
+            / league_away_avg
+        )
+
+        expected_home = max(0.05, expected_home)
+        expected_away = max(0.05, expected_away)
+
+        home_win = 0
+        draw = 0
+        away_win = 0
+
+        for h in range(10):
+            for a in range(10):
+                probability = (
+                    poisson(expected_home, h)
+                    * poisson(expected_away, a)
+                )
+
+                if h > a:
+                    home_win += probability
+                elif h == a:
+                    draw += probability
+                else:
+                    away_win += probability
+
+        probabilities = {
+            "home": home_win,
+            "draw": draw,
+            "away": away_win
+        }
+
+        prediction = max(
+            probabilities,
+            key=probabilities.get
+        )
+
+        if match["home_goals"] > match["away_goals"]:
+            actual = "home"
+        elif match["home_goals"] == match["away_goals"]:
+            actual = "draw"
+        else:
+            actual = "away"
+
+        results.append({
+            "date": match.get("date"),
+            "home": home,
+            "away": away,
+            "predicted": prediction,
+            "actual": actual,
+            "correct": prediction == actual
+        })
+
+    total = len(results)
+    correct = sum(r["correct"] for r in results)
+
+    return {
+        "matches_tested": total,
+        "correct_predictions": correct,
+        "accuracy": round(correct / total, 4) if total else None,
+        "results": results
+    }
 @app.get("/health")
 def health():
     return {
