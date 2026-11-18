@@ -424,7 +424,56 @@ def calculate_prediction(data):
         "value_analysis": value_analysis
     }
 
+def apply_temperature(probabilities, temperature):
+    adjusted = {
+        key: value ** (1 / temperature)
+        for key, value in probabilities.items()
+    }
 
+    total = sum(adjusted.values())
+
+    return {
+        key: value / total
+        for key, value in adjusted.items()
+    }
+
+
+def fit_temperature(history):
+    if len(history) < 50:
+        return 1.0
+
+    best_temperature = 1.0
+    best_score = float("inf")
+
+    for step in range(50, 201, 5):
+        temperature = step / 100
+        total_score = 0
+
+        for match in history:
+            adjusted = apply_temperature(
+                match["probabilities"],
+                temperature
+            )
+
+            actual = match["actual"]
+
+            score = sum(
+                (
+                    adjusted[key]
+                    - (1 if key == actual else 0)
+                ) ** 2
+                for key in ("home", "draw", "away")
+            )
+
+            total_score += score
+
+        average_score = total_score / len(history)
+
+        if average_score < best_score:
+            best_score = average_score
+            best_temperature = temperature
+
+    return best_temperature
 def run_backtest(matches, min_history=30):
     ordered = sorted(
         matches,
@@ -446,7 +495,7 @@ def run_backtest(matches, min_history=30):
 
         if len(historical) < min_history:
             continue
-
+                temperature = fit_temperature(results)
         matches_of_day = [
             m for m in ordered
             if m.get("date") == current_date
@@ -555,7 +604,11 @@ def run_backtest(matches, min_history=30):
                 key: value / total_mass
                 for key, value in probabilities.items()
             }
-
+                                  raw_probabilities = probabilities.copy()
+            probabilities = apply_temperature(
+                probabilities,
+                temperature
+            )
             prediction = max(
                 probabilities,
                 key=probabilities.get
@@ -591,6 +644,10 @@ def run_backtest(matches, min_history=30):
                     key: round(value, 6)
                     for key, value in probabilities.items()
                 },
+               "raw_probabilities": {
+    key: round(value, 6)
+    for key, value in raw_probabilities.items()
+},
                 "model_brier": model_brier,
                 "baseline_brier": baseline_brier
             })
