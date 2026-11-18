@@ -58,12 +58,13 @@ def load_matches(season: str, league_file: str):
             continue
 
         matches.append({
-    "date": match.get("date"),
-    "home": match["team1"],
-    "away": match["team2"],
-    "home_goals": home_goals,
-    "away_goals": away_goals,
-})     
+            "date": match.get("date"),
+            "home": match["team1"],
+            "away": match["team2"],
+            "home_goals": home_goals,
+            "away_goals": away_goals,
+        })
+
     return matches
     
 
