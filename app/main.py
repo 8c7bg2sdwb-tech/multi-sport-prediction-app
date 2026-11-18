@@ -473,6 +473,41 @@ def teams(
     ))
 
     return {"teams": names}
+
+@app.get("/api/football/strength")
+def team_strength(
+    team: str,
+    season: str = "2025-26",
+    league_file: str = "en.1.json"
+):
+    try:
+        matches = load_matches(season, league_file)
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Erreur OpenFootball : {error}"
+        )
+
+    if not matches:
+        raise HTTPException(
+            status_code=422,
+            detail="Aucun match disponible."
+        )
+
+    if team not in (
+        [m["home"] for m in matches]
+        + [m["away"] for m in matches]
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Équipe introuvable dans cette saison."
+        )
+
+    return {
+        "season": season,
+        "strength": get_team_strength(matches, team)
+    }
+
 @app.get("/api/football/form")
 def team_form(
     team: str,
