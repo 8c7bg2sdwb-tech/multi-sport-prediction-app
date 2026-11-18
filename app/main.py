@@ -109,6 +109,72 @@ def get_team_statistics(matches, team):
         ),
     }
 
+def get_team_strength(matches, team):
+    stats = get_team_statistics(matches, team)
+
+    home_played = stats["home_played"]
+    away_played = stats["away_played"]
+
+    league_home_avg = (
+        sum(m["home_goals"] for m in matches) / len(matches)
+    )
+
+    league_away_avg = (
+        sum(m["away_goals"] for m in matches) / len(matches)
+    )
+
+    home_scored_avg = (
+        stats["home_scored"] / home_played
+        if home_played else None
+    )
+
+    home_conceded_avg = (
+        stats["home_conceded"] / home_played
+        if home_played else None
+    )
+
+    away_scored_avg = (
+        stats["away_scored"] / away_played
+        if away_played else None
+    )
+
+    away_conceded_avg = (
+        stats["away_conceded"] / away_played
+        if away_played else None
+    )
+
+    return {
+        "team": team,
+        "matches": {
+            "home": home_played,
+            "away": away_played
+        },
+        "home": {
+            "goals_scored_avg": round(home_scored_avg, 2)
+            if home_scored_avg is not None else None,
+            "goals_conceded_avg": round(home_conceded_avg, 2)
+            if home_conceded_avg is not None else None,
+            "attack_index": round(
+                home_scored_avg / league_home_avg, 3
+            ) if home_scored_avg is not None and league_home_avg else None,
+            "defense_index": round(
+                league_away_avg / home_conceded_avg, 3
+            ) if home_conceded_avg is not None and home_conceded_avg > 0 else None
+        },
+        "away": {
+            "goals_scored_avg": round(away_scored_avg, 2)
+            if away_scored_avg is not None else None,
+            "goals_conceded_avg": round(away_conceded_avg, 2)
+            if away_conceded_avg is not None else None,
+            "attack_index": round(
+                away_scored_avg / league_away_avg, 3
+            ) if away_scored_avg is not None and league_away_avg else None,
+            "defense_index": round(
+                league_home_avg / away_conceded_avg, 3
+            ) if away_conceded_avg is not None and away_conceded_avg > 0 else None
+        }
+    }
+
 def get_recent_form(matches, team, last_n=5):
     team_matches = [
         m for m in matches
