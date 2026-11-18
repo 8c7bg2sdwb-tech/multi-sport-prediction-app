@@ -57,13 +57,13 @@ def load_matches(season: str, league_file: str):
         if not match.get("team1") or not match.get("team2"):
             continue
 
-         matches.append({
+    matches.append({
     "date": match.get("date"),
     "home": match["team1"],
     "away": match["team2"],
     "home_goals": home_goals,
     "away_goals": away_goals,
-})
+})     
 
     return matches
     
