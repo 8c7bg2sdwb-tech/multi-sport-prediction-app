@@ -35,7 +35,7 @@ def load_matches(season: str, league_file: str):
     with urllib.request.urlopen(request, timeout=20) as response:
         data = json.loads(response.read().decode("utf-8"))
 
-    matches = []
+matches = []
 
     for round_data in data.get("rounds", []):
         for match in round_data.get("matches", []):
@@ -58,7 +58,7 @@ def load_matches(season: str, league_file: str):
             })
 
     return matches
-
+    
 
 class PredictionInput(BaseModel):
     home_team: str = Field(min_length=1)
