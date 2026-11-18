@@ -536,6 +536,26 @@ def run_backtest(matches, min_history=30):
         "accuracy": round(correct / total, 4) if total else None,
         "results": results
     }
+@app.get("/api/football/backtest")
+def football_backtest(
+    season: str = "2025-26",
+    league_file: str = "en.1.json",
+    min_history: int = 30
+):
+    matches = load_matches(season, league_file)
+
+    results = run_backtest(
+        matches,
+        min_history=min_history
+    )
+
+    return {
+        "status": "success",
+        "source": "OpenFootball",
+        "season": season,
+        "league_file": league_file,
+        **results
+    }
 @app.get("/health")
 def health():
     return {
