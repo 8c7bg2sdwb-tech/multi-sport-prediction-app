@@ -109,7 +109,68 @@ def get_team_statistics(matches, team):
         ),
     }
 
+def get_recent_form(matches, team, last_n=5):
+    team_matches = [
+        m for m in matches
+        if m["home"] == team or m["away"] == team
+    ]
 
+    team_matches = sorted(
+        team_matches,
+        key=lambda m: m.get("date") or "",
+        reverse=True
+    )[:last_n]
+
+    wins = 0
+    draws = 0
+    losses = 0
+    goals_scored = 0
+    goals_conceded = 0
+    points = 0
+    form = []
+
+    for match in team_matches:
+        if match["home"] == team:
+            scored = match["home_goals"]
+            conceded = match["away_goals"]
+        else:
+            scored = match["away_goals"]
+            conceded = match["home_goals"]
+
+        goals_scored += scored
+        goals_conceded += conceded
+
+        if scored > conceded:
+            wins += 1
+            points += 3
+            result = "W"
+
+        elif scored == conceded:
+            draws += 1
+            points += 1
+            result = "D"
+
+        else:
+            losses += 1
+            result = "L"
+
+        form.append({
+            "date": match.get("date"),
+            "result": result,
+            "goals_scored": scored,
+            "goals_conceded": conceded
+        })
+
+    return {
+        "matches_analyzed": len(team_matches),
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "points": points,
+        "goals_scored": goals_scored,
+        "goals_conceded": goals_conceded,
+        "form": form
+    }
 def calculate_prediction(data):
     try:
         matches = load_matches(
