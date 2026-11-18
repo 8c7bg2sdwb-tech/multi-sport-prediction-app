@@ -439,7 +439,6 @@ def run_backtest(matches, min_history=30):
     ))
 
     for current_date in dates:
-
         historical = [
             m for m in ordered
             if m.get("date") and m["date"] < current_date
@@ -464,8 +463,32 @@ def run_backtest(matches, min_history=30):
         if league_home_avg <= 0 or league_away_avg <= 0:
             continue
 
-        for match in matches_of_day:
+        # Strategie de reference : frequences historiques
+        baseline_counts = {
+            "home": 0,
+            "draw": 0,
+            "away": 0
+        }
 
+        for old_match in historical:
+            if old_match["home_goals"] > old_match["away_goals"]:
+                baseline_counts["home"] += 1
+            elif old_match["home_goals"] == old_match["away_goals"]:
+                baseline_counts["draw"] += 1
+            else:
+                baseline_counts["away"] += 1
+
+        baseline_probs = {
+            key: value / len(historical)
+            for key, value in baseline_counts.items()
+        }
+
+        baseline_prediction = max(
+            baseline_probs,
+            key=baseline_probs.get
+        )
+
+        for match in matches_of_day:
             home = match["home"]
             away = match["away"]
 
@@ -501,9 +524,13 @@ def run_backtest(matches, min_history=30):
             expected_home = max(0.05, expected_home)
             expected_away = max(0.05, expected_away)
 
-            home_win = 0
-            draw = 0
-            away_win = 0
+            probabilities = {
+                "home": 0.0,
+                "draw": 0.0,
+                "away": 0.0
+            }
+
+            total_mass = 0.0
 
             for h in range(10):
                 for a in range(10):
@@ -512,17 +539,21 @@ def run_backtest(matches, min_history=30):
                         * poisson(expected_away, a)
                     )
 
+                    total_mass += probability
+
                     if h > a:
-                        home_win += probability
+                        probabilities["home"] += probability
                     elif h == a:
-                        draw += probability
+                        probabilities["draw"] += probability
                     else:
-                        away_win += probability
+                        probabilities["away"] += probability
+
+            if total_mass <= 0:
+                continue
 
             probabilities = {
-                "home": home_win,
-                "draw": draw,
-                "away": away_win
+                key: value / total_mass
+                for key, value in probabilities.items()
             }
 
             prediction = max(
@@ -537,24 +568,65 @@ def run_backtest(matches, min_history=30):
             else:
                 actual = "away"
 
+            model_brier = sum(
+                (probabilities[key] - (1 if key == actual else 0)) ** 2
+                for key in ("home", "draw", "away")
+            )
+
+            baseline_brier = sum(
+                (baseline_probs[key] - (1 if key == actual else 0)) ** 2
+                for key in ("home", "draw", "away")
+            )
+
             results.append({
                 "date": current_date,
                 "home": home,
                 "away": away,
                 "predicted": prediction,
                 "actual": actual,
-                "correct": prediction == actual
+                "correct": prediction == actual,
+                "baseline_predicted": baseline_prediction,
+                "baseline_correct": baseline_prediction == actual,
+                "probabilities": {
+                    key: round(value, 6)
+                    for key, value in probabilities.items()
+                },
+                "model_brier": model_brier,
+                "baseline_brier": baseline_brier
             })
 
     total = len(results)
+
     correct = sum(r["correct"] for r in results)
+    baseline_correct = sum(r["baseline_correct"] for r in results)
+
+    model_brier_score = (
+        sum(r["model_brier"] for r in results) / total
+        if total else None
+    )
+
+    baseline_brier_score = (
+        sum(r["baseline_brier"] for r in results) / total
+        if total else None
+    )
 
     return {
         "matches_tested": total,
         "correct_predictions": correct,
         "accuracy": round(correct / total, 4) if total else None,
+        "baseline_correct_predictions": baseline_correct,
+        "baseline_accuracy": round(
+            baseline_correct / total, 4
+        ) if total else None,
+        "model_brier_score": round(
+            model_brier_score, 4
+        ) if total else None,
+        "baseline_brier_score": round(
+            baseline_brier_score, 4
+        ) if total else None,
         "results": results
     }
+
 
 @app.get("/api/football/backtest")
 def football_backtest(
